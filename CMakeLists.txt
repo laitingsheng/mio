@@ -29,9 +29,9 @@ include(GNUInstallDirs)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 #
-# mio requires C++ 11 support, at a minimum. The `CMAKE_CXX_STANDARD` variable
-# is referenced when a target is created to initialize the CXX_STANDARD target
-# property.
+# mio requires at least C++11 support (or C++14 support with MSVC).
+# The `CMAKE_CXX_STANDARD` variable is referenced when a target is created to
+# initialize the CXX_STANDARD target property.
 #
 # ** NOTE **
 # This is a directory scope variable. This has several implicitations.
@@ -39,7 +39,16 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # 1. It DOES NOT propegate to parent scopes (such as parent projects)
 # 2. It hides cache variables of the same name for this directory and below
 #
-set(CMAKE_CXX_STANDARD 11)
+if (MSVC)
+  if (CMAKE_CXX_STANDARD LESS 14)
+    set(CMAKE_CXX_STANDARD 14)
+  endif ()
+else ()
+  if (CMAKE_CXX_STANDARD LESS 11)
+    set(CMAKE_CXX_STANDARD 11)
+  endif ()
+endif ()
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 #

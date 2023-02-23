@@ -1,4 +1,5 @@
 /* Copyright 2017 https://github.com/mandreyel
+ * Copyright 2023 Tinson Lai
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of this
  * software and associated documentation files (the "Software"), to deal in the Software
@@ -26,6 +27,7 @@
 #include "mio/detail/string_util.hpp"
 
 #include <algorithm>
+#include <vector>
 
 #ifndef _WIN32
 # include <unistd.h>
@@ -52,14 +54,25 @@ inline DWORD int64_low(int64_t n) noexcept
     return n & 0xffffffff;
 }
 
-std::wstring s_2_ws(const std::string& s)
+inline std::wstring s_2_ws(const std::string &s)
 {
     if (s.empty())
-        return{};
-    const auto s_length = static_cast<int>(s.length());
-    auto buf = std::vector<wchar_t>(s_length);
-    const auto wide_char_count = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), s_length, buf.data(), s_length);
-    return std::wstring(buf.data(), wide_char_count);
+        return {};
+
+#if __cplusplus < 201703L
+    std::vector<wchar_t> ret(2 * s.size());
+#else
+    std::wstring ret(2 * s.size(), L'\0');
+#endif
+
+    const size_t length = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), int(s.size()), ret.data(), int(ret.size()));
+
+#if __cplusplus < 201703L
+    return { ret.data(), length };
+#else
+    ret.resize(length);
+    return ret;
+#endif
 }
 
 template<

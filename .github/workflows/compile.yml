@@ -1,0 +1,87 @@
+name: CMake
+
+on:
+  push:
+    branches:
+    - main
+    paths:
+    - include/**
+    - test/**
+    - .github/workflows/compile.yml
+    - CMakeLists.txt
+  pull_request:
+    branches:
+    - main
+    paths:
+    - include/**
+    - test/**
+    - .github/workflows/compile.yml
+    - CMakeLists.txt
+
+jobs:
+  unix:
+    strategy:
+      matrix:
+        compiler:
+        - os: ubuntu-latest
+          name: GCC
+          exe: /usr/bin/g++
+          flags: -Wall -Wpedantic
+        - os: ubuntu-latest
+          name: LLVM[Ubuntu]
+          exe: /usr/bin/clang++
+          flags: -Wall -Wpedantic
+        - os: macos-latest
+          name: LLVM[Darwin]
+          exe: /usr/bin/clang++
+          flags: -Wall -Wpedantic
+        std:
+        - 11
+        - 14
+        - 17
+        - 20
+
+    name: ${{ matrix.compiler.name }} (C++${{ matrix.std }})
+    runs-on: ${{ matrix.compiler.os }}
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Configure CMake
+      run: cmake -B "${{ github.workspace }}/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="${{ matrix.compiler.exe }}" -DCMAKE_CXX_FLAGS_INIT="${{ matrix.compiler.flags }}" -DCMAKE_CXX_STANDARD="${{ matrix.std }}"
+
+    - name: Build
+      run: cmake --build "${{ github.workspace }}/build" --config Release
+
+    - name: Test
+      working-directory: "${{ github.workspace }}/build"
+      run: |
+        ctest -C Release -VV -M Experimental -T Start
+        ctest -C Release -VV -M Experimental -T Build
+        ctest -C Release -VV -M Experimental -T Test
+  windows:
+    strategy:
+      matrix:
+        std:
+        - 14
+        - 17
+        - 20
+
+    name: MSVC (C++${{ matrix.std }})
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Configure CMake
+      run: cmake -B "${{ github.workspace }}/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="cl.exe" -DCMAKE_CXX_FLAGS_INIT="/utf-8 /Wall /external:W0" -DCMAKE_CXX_STANDARD="${{ matrix.std }}"
+
+    - name: Build
+      run: cmake --build "${{ github.workspace }}/build" --config Release
+
+    - name: Test
+      working-directory: "${{ github.workspace }}/build"
+      run: |
+        ctest -C Release -VV -M Experimental -T Start
+        ctest -C Release -VV -M Experimental -T Build
+        ctest -C Release -VV -M Experimental -T Test
