@@ -1,0 +1,81 @@
+{
+  "version": 4,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "cacheVariables": {
+        // general options
+        "CMAKE_C_STANDARD": "17",
+        "CMAKE_C_STANDARD_REQUIRED": true,
+        "CMAKE_C_EXTENSIONS": false,
+        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_CXX_STANDARD_REQUIRED": true,
+        "CMAKE_CXX_EXTENSIONS": false
+      }
+    },
+    {
+      "name": "windows-msvc-x64",
+      "hidden": true,
+      "inherits": "base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "displayName": "Windows MSVC x64",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        // compiler specific
+        "CMAKE_C_COMPILER": "cl.exe",
+        "CMAKE_CXX_COMPILER": "cl.exe",
+        "CMAKE_C_FLAGS_INIT": "/options:strict /utf-8 /volatile:iso /fp:contract /fp:precise /openmp /Zc:preprocessor /permissive- /Zc:__STDC__ /D_CRT_DECLARE_NONSTDC_NAMES",
+        "CMAKE_CXX_FLAGS_INIT": "/options:strict /utf-8 /volatile:iso /fp:contract /fp:precise /openmp /Zc:lambda /Zc:preprocessor /permissive- /EHsc /Zc:__cplusplus /Zc:enumTypes /Zc:externConstexpr /Zc:inline /Zc:throwingNew /D_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES",
+        "CMAKE_EXE_LINKER_FLAGS_INIT": "/STACK:0x800000",
+        "CMAKE_EXE_LINKER_FLAGS_RELEASE_INIT": "/LTCG"
+      },
+      "toolset": {
+        "value": "host=x64",
+        "strategy": "external"
+      },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": {
+          "hostOS": [
+            "Windows"
+          ],
+          "intelliSenseMode": "windows-msvc-x64",
+          "enableMicrosoftCodeAnalysis": true
+        },
+        "jetbrains.com/clion": {
+          "toolchain": "Visual Studio 2022 x64"
+        }
+      }
+    },
+    {
+      "name": "windows-msvc-x64-release",
+      "inherits": "windows-msvc-x64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded"
+      }
+    },
+    {
+      "name": "windows-msvc-x64-debug",
+      "inherits": "windows-msvc-x64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebug"
+      }
+    },
+  ]
+}
