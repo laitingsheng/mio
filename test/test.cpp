@@ -1,5 +1,4 @@
 #include <mio/mmap.hpp>
-#include <mio/shared_mmap.hpp>
 
 #include <string>
 #include <fstream>
@@ -46,7 +45,7 @@ int main()
     char v = 33;
     for (auto& b : buffer) {
        b = v;
-       ++v; 
+       ++v;
        // Limit to last printable ASCII character.
        v %= 126;
        if(v == 0) {
