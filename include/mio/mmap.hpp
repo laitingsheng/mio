@@ -27,11 +27,17 @@
 #include <algorithm>
 #include <array>
 #include <iterator>
+#include <locale>
 #include <memory>
 #include <string>
 #include <system_error>
 #include <type_traits>
 #include <vector>
+
+// commented out by now as it is unused
+// #if !defined(_MSC_VER) || !_MSVC_TRADITIONAL
+// #define MIO_STD_PP
+// #endif
 
 #if __cplusplus >= 201402L
 #  define MIO_DEPRECATED [[deprecated]]
@@ -66,6 +72,10 @@
 #endif
 
 #if __cplusplus >= 202002L
+// commented out by now as it is unused
+// #ifdef MIO_STD_PP
+// #  define MIO_STD_PP_V
+// #endif
 #  ifdef __cpp_concepts
 #    define MIO_CONCEPTS_SUPPORT
 #  endif
@@ -117,10 +127,22 @@
 namespace mio
 {
 
+namespace experimental
+{
+
+enum class access_mode
+{
+	READ,
+	WRITE
+};
+
+namespace detail
+{
+
 struct handle_wrapper final
 {
 #ifdef _WIN32
-	using underlying_type = typename HANDLE;
+	using underlying_type = HANDLE;
 #else
 	using underlying_type = int;
 #endif
@@ -153,11 +175,17 @@ public:
 		close();
 	}
 
-	MIO_DEPRECATED_REASON("use `unsafe()` instead")
 	MIO_NODISCARD
-	operator underlying_type() &
+	inline operator bool() const noexcept
 	{
-		return unsafe();
+		return valid();
+	}
+
+	MIO_DEPRECATED_REASON("use `raw()` instead")
+	MIO_NODISCARD
+	inline operator underlying_type() &
+	{
+		return raw();
 	}
 
 	void close()
@@ -183,11 +211,104 @@ public:
 	}
 
 	MIO_NODISCARD
-	underlying_type unsafe() &
+	underlying_type raw() &
 	{
 		return _handle;
 	}
+
+	MIO_NODISCARD
+	bool valid() const noexcept
+	{
+		return _handle != INVALID_HANDLE_VALUE;
+	}
 };
+
+template<access_mode>
+struct file_access_mode_trait;
+
+template<>
+struct file_access_mode_trait<access_mode::READ> final
+{
+#ifdef _WIN32
+	static constexpr auto open_flags = GENERIC_READ;
+	static constexpr auto access_flags = OPEN_EXISTING;
+#else
+	static constexpr auto open_flags = O_RDONLY;
+#endif
+};
+
+template<>
+struct file_access_mode_trait<access_mode::WRITE> final
+{
+#ifdef _WIN32
+	static constexpr auto open_flags = GENERIC_READ | GENERIC_WRITE;
+	static constexpr auto access_flags = OPEN_ALWAYS;
+#else
+	static constexpr auto open_flags = O_CREAT | O_RDWR;
+#endif
+};
+
+} // namespace mio::experimental::detail
+
+template<access_mode M>
+class file final
+{
+	using _trait = detail::file_access_mode_trait<M>;
+
+	detail::handle_wrapper _handle;
+public:
+	file() noexcept = default;
+
+#ifdef _WIN32
+	file(const std::wstring& path) : _handle(
+		::CreateFileW,
+		path.c_str(),
+		_trait::open_flags,
+		FILE_SHARE_READ | FILE_SHARE_WRITE,
+		_trait::access_flags,
+		FILE_ATTRIBUTE_NORMAL,
+		nullptr
+	) {}
+
+	MIO_DEPRECATED_REASON("ANSI version of Windows API is considered deprecated")
+	file(const std::string& path) : _handle(
+		::CreateFileA,
+		path.c_str(),
+		_trait::open_flags,
+		FILE_SHARE_READ | FILE_SHARE_WRITE,
+		_trait::access_flags,
+		FILE_ATTRIBUTE_NORMAL,
+		nullptr
+	) {}
+#else
+	file(const std::string& path) : _handle(::open, path.c_str(), _trait::open_flags) {}
+#endif
+
+#ifdef MIO_FILESYSTEM_SUPPORT
+	inline file(const std::filesystem::path& path) : file(path.native()) {}
+#endif
+
+	size_t size()
+	{
+#if _WIN32
+		DWORD high, low = ::GetFileSize(_handle.unsafe(), &high);
+		if (low == INVALID_FILE_SIZE)
+		{
+			auto ec = GetLastError();
+			if (ec != NO_ERROR)
+				throw std::system_error(ec, std::system_category());
+		}
+		return (high << 32) | low;
+#else
+		struct stat s;
+		if (::fstat(_handle.raw(), &s))
+			throw std::system_error(errno, std::system_category());
+		return s.st_size;
+#endif
+	}
+};
+
+} // namespace mio::experimental
 
 /**
  * This is used by `basic_mmap` to determine whether to create a read-only or
