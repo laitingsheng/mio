@@ -1,4 +1,5 @@
 /* Copyright 2017 https://github.com/mandreyel
+ * Copyright 2023 Tinson Lai
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of this
  * software and associated documentation files (the "Software"), to deal in the Software
@@ -24,6 +25,7 @@
 #include <cstdint>
 
 #include <algorithm>
+#include <array>
 #include <iterator>
 #include <memory>
 #include <string>
@@ -31,20 +33,77 @@
 #include <type_traits>
 #include <vector>
 
-#ifdef _WIN32
-# ifndef WIN32_LEAN_AND_MEAN
-#  define WIN32_LEAN_AND_MEAN
-# endif
-# include <windows.h>
+#if __cplusplus >= 201402L
+#  define MIO_DEPRECATED [[deprecated]]
+#elif defined(_MSC_VER)
+#  define MIO_DEPRECATED __declspec(deprecated)
+#elif defined(__GNUC__) || defined(__clang__)
+#  define MIO_DEPRECATED __attribute__((deprecated))
 #else
-# include <unistd.h>
-# include <fcntl.h>
-# include <sys/mman.h>
-# include <sys/stat.h>
-# define INVALID_HANDLE_VALUE -1
+#  define MIO_DEPRECATED
 #endif
 
-namespace mio {
+#if __cplusplus >= 201703L
+#  define MIO_NODISCARD [[nodiscard]]
+// _Check_return_ raises compiler error which is not identical to the standard attribute
+// #elif defined(_MSC_VER)
+// #  define MIO_NODISCARD _Check_return_
+#elif defined(__GNUC__) || defined(__clang__)
+#  define MIO_NODISCARD __attribute__((warn_unused_result))
+#else
+#  define MIO_NODISCARD
+#endif
+
+#if __cplusplus >= 201703L
+#  include <filesystem>
+#  define MIO_FILESYSTEM_SUPPORT
+#  include <string_view>
+#  define MIO_STRING_VIEW_SUPPORT
+#endif
+
+#if __cplusplus >= 202002L
+#  ifdef __cpp_lib_ranges
+#    include <ranges>
+#    define MIO_RANGES_SUPPORT
+#  endif
+#endif
+
+#ifdef _WIN32
+#  ifndef _UNICODE
+#    define _UNICODE
+#    define __MIO_DEFINE__UNICODE
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#    define __MIO_DEFINE_NOMINMAX
+#  endif
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#    define __MIO_DEFINE_WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#  ifdef __MIO_DEFINE__UNICODE
+#    undef _UNICODE
+#    undef __MIO_DEFINE__UNICODE
+#  endif
+#  ifdef __MIO_DEFINE_NOMINMAX
+#    undef NOMINMAX
+#    undef __MIO_DEFINE_NOMINMAX
+#  endif
+#  ifdef __MIO_DEFINE_WIN32_LEAN_AND_MEAN
+#    undef WIN32_LEAN_AND_MEAN
+#    undef __MIO_DEFINE_WIN32_LEAN_AND_MEAN
+#  endif
+#else
+#  include <unistd.h>
+#  include <fcntl.h>
+#  include <sys/mman.h>
+#  include <sys/stat.h>
+#  define INVALID_HANDLE_VALUE -1
+#endif
+
+namespace mio
+{
 
 /**
  * This is used by `basic_mmap` to determine whether to create a read-only or
@@ -303,7 +362,7 @@ public:
 	 * handle (which is closed when the object destructs or `unmap` is called), which is
 	 * then used to memory map the requested region. Upon failure, `error` is set to
 	 * indicate the reason and the object remains in an unmapped state.
-	 * 
+	 *
 	 * The entire file is mapped.
 	 */
 	template<typename String>
@@ -342,7 +401,7 @@ public:
 	 * `handle`, which must be a valid file handle, which is used to memory map the
 	 * requested region. Upon failure, `error` is set to indicate the reason and the
 	 * object remains in an unmapped state.
-	 * 
+	 *
 	 * The entire file is mapped.
 	 */
 	void map(const handle_type handle, std::error_code& error)
@@ -912,155 +971,54 @@ inline size_t make_offset_page_aligned(size_t offset) noexcept
 namespace detail
 {
 
-template<
-	typename S,
-	typename C = typename std::decay<S>::type,
-	typename = decltype(std::declval<C>().data()),
-	typename = typename std::enable_if<
-	std::is_same<typename C::value_type, char>::value
-#ifdef _WIN32
-	|| std::is_same<typename C::value_type, wchar_t>::value
+template<typename T>
+inline const T *c_str(const std::basic_string<T>& s) noexcept
+{
+	return s.c_str();
+}
+
+template<typename T>
+inline bool empty(const std::basic_string<T>& s) noexcept
+{
+	return s.empty();
+}
+
+#ifdef MIO_FILESYSTEM_SUPPORT
+
+inline auto c_str(const std::filesystem::path& s) noexcept
+{
+	return s.c_str();
+}
+
+inline auto empty(const std::filesystem::path& s) noexcept
+{
+	return s.empty();
+}
+
 #endif
-	>::type
-> struct char_type_helper
-{
-	using type = typename C::value_type;
-};
 
-template<class T>
-struct char_type
-{
-	using type = typename char_type_helper<T>::type;
-};
-
-// TODO: can we avoid this brute force approach?
-template<>
-struct char_type<char*>
-{
-	using type = char;
-};
-
-template<>
-struct char_type<const char*>
-{
-	using type = char;
-};
-
-template<size_t N>
-struct char_type<char[N]>
-{
-	using type = char;
-};
-
-template<size_t N>
-struct char_type<const char[N]>
-{
-	using type = char;
-};
-
-#ifdef _WIN32
-template<>
-struct char_type<wchar_t*>
-{
-	using type = wchar_t;
-};
-
-template<>
-struct char_type<const wchar_t*>
-{
-	using type = wchar_t;
-};
-
-template<size_t N>
-struct char_type<wchar_t[N]>
-{
-	using type = wchar_t;
-};
-
-template<size_t N>
-struct char_type<const wchar_t[N]>
-{
-	using type = wchar_t;
-};
-#endif // _WIN32
-
-template<typename CharT, typename S>
-struct is_c_str_helper
-{
-	static constexpr bool value = std::is_same<
-		CharT*,
-		// TODO: I'm so sorry for this... Can this be made cleaner?
-		typename std::add_pointer<
-		typename std::remove_cv<
-		typename std::remove_pointer<
-		typename std::decay<
-		S
-		>::type
-		>::type
-		>::type
-		>::type
-	>::value;
-};
-
-template<typename S>
-struct is_c_str
-{
-	static constexpr bool value = is_c_str_helper<char, S>::value;
-};
-
-#ifdef _WIN32
-template<typename S>
-struct is_c_wstr
-{
-	static constexpr bool value = is_c_str_helper<wchar_t, S>::value;
-};
-#endif // _WIN32
-
-template<typename S>
-struct is_c_str_or_c_wstr
-{
-	static constexpr bool value = is_c_str<S>::value
-#ifdef _WIN32
-		|| is_c_wstr<S>::value
-#endif
-		;
-};
-
-template<
-	typename String,
-	typename = decltype(std::declval<String>().data()),
-	typename = typename std::enable_if<!is_c_str_or_c_wstr<String>::value>::type
-> const typename char_type<String>::type* c_str(const String& path)
-{
-	return path.data();
+#define __MIO_DETAIL_EMPTY_EXPAND(T) \
+inline bool empty(const T *s) noexcept \
+{ \
+	return s == nullptr || *s == 0; \
 }
 
-template<
-	typename String,
-	typename = decltype(std::declval<String>().empty()),
-	typename = typename std::enable_if<!is_c_str_or_c_wstr<String>::value>::type
-> bool empty(const String& path)
-{
-	return path.empty();
+#define __MIO_DETAIL_C_STR_EXPAND(T) \
+inline const T *c_str(const T *s) noexcept \
+{ \
+	return s; \
 }
 
-template<
-	typename String,
-	typename = typename std::enable_if<is_c_str_or_c_wstr<String>::value>::type
-> const typename char_type<String>::type* c_str(String path)
-{
-	return path;
-}
+__MIO_DETAIL_EMPTY_EXPAND(char)
 
-template<
-	typename String,
-	typename = typename std::enable_if<is_c_str_or_c_wstr<String>::value>::type
-> bool empty(String path)
-{
-	return !path || (*path == 0);
-}
+__MIO_DETAIL_C_STR_EXPAND(char)
 
 #ifdef _WIN32
+
+__MIO_DETAIL_EMPTY_EXPAND(wchar_t)
+
+__MIO_DETAIL_C_STR_EXPAND(wchar_t)
+
 namespace win
 {
 
@@ -1076,59 +1034,105 @@ inline DWORD int64_low(int64_t n) noexcept
 	return n & 0xffffffff;
 }
 
-inline std::wstring s_2_ws(const std::string &s)
-{
-	if (s.empty())
-		return {};
+#define __MIO_DETAIL_WIN32_CREATE_FILE(F, P, M) \
+F( \
+	P, \
+	M == access_mode::read ? GENERIC_READ : GENERIC_READ | GENERIC_WRITE, \
+	FILE_SHARE_READ | FILE_SHARE_WRITE, \
+	0, \
+	OPEN_EXISTING, \
+	FILE_ATTRIBUTE_NORMAL, \
+	0 \
+);
 
-#if __cplusplus < 201703L
-	std::vector<wchar_t> ret(2 * s.size());
-#else
-	std::wstring ret(2 * s.size(), L'\0');
+MIO_DEPRECATED
+MIO_NODISCARD
+inline file_handle_type open_file_helper(LPCSTR path, const access_mode mode)
+{
+	return __MIO_DETAIL_WIN32_CREATE_FILE(::CreateFileA, path, mode);
+}
+
+MIO_DEPRECATED
+MIO_NODISCARD
+inline file_handle_type open_file_helper(LPCWSTR path, const access_mode mode)
+{
+	return __MIO_DETAIL_WIN32_CREATE_FILE(::CreateFileW, path, mode);
+}
+
+MIO_DEPRECATED
+MIO_NODISCARD
+inline file_handle_type open_file_helper(const std::string& path, const access_mode mode)
+{
+	return __MIO_DETAIL_WIN32_CREATE_FILE(::CreateFileA, path.c_str(), mode);
+}
+
+MIO_NODISCARD
+inline file_handle_type open_file_helper(const std::wstring& path, const access_mode mode)
+{
+	return __MIO_DETAIL_WIN32_CREATE_FILE(::CreateFileW, path.c_str(), mode);
+}
+
+#undef __MIO_DETAIL_WIN32_CREATE_FILE
+
+#ifdef MIO_FILESYSTEM_SUPPORT
+
+MIO_NODISCARD
+inline file_handle_type open_file_helper(const std::filesystem::path& path, const access_mode mode)
+{
+	return open_file_helper(path.wstring(), mode);
+}
+
 #endif
 
-	const size_t length = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), int(s.size()), ret.data(), int(ret.size()));
+#ifdef MIO_RANGES_SUPPORT
 
-#if __cplusplus < 201703L
-	return { ret.data(), length };
+MIO_NODISCARD
+inline file_handle_type open_file_helper(const std::ranges::contiguous_range auto& path, const access_mode mode)
+{
+	return open_file_helper(
+		std::basic_string<std::ranges::range_value_t<path>> { std::ranges::data(path), std::ranges::size(path) },
+		mode
+	);
+}
+
 #else
-	ret.resize(length);
-	return ret;
+
+template<typename T, size_t N>
+MIO_NODISCARD
+inline file_handle_type open_file_helper(const T (&path)[N], const access_mode mode)
+{
+	return open_file_helper(std::basic_string<T> { path, N }, mode);
+}
+
+template<typename T, size_t N>
+MIO_NODISCARD
+inline file_handle_type open_file_helper(const std::array<T, N>& path, const access_mode mode)
+{
+	return open_file_helper(std::basic_string<T> { path.data(), N }, mode);
+}
+
+template<typename T>
+MIO_NODISCARD
+inline file_handle_type open_file_helper(const std::vector<T>& path, const access_mode mode)
+{
+	return open_file_helper(std::basic_string<T> { path.data(), path.size() }, mode);
+}
+
 #endif
+
+#ifdef MIO_STRING_VIEW_SUPPORT
+
+template<typename T>
+MIO_NODISCARD
+inline file_handle_type open_file_helper(const std::basic_string_view<T> path, const access_mode mode)
+{
+	return open_file_helper(std::basic_string<T>(path), mode);
 }
 
-template<
-	typename String,
-	typename = typename std::enable_if<
-	std::is_same<typename char_type<String>::type, char>::value
-	>::type
-> file_handle_type open_file_helper(const String& path, const access_mode mode)
-{
-	return ::CreateFileW(s_2_ws(path).c_str(),
-		mode == access_mode::read ? GENERIC_READ : GENERIC_READ | GENERIC_WRITE,
-		FILE_SHARE_READ | FILE_SHARE_WRITE,
-		0,
-		OPEN_EXISTING,
-		FILE_ATTRIBUTE_NORMAL,
-		0);
-}
-
-template<typename String>
-typename std::enable_if<
-	std::is_same<typename char_type<String>::type, wchar_t>::value,
-	file_handle_type
->::type open_file_helper(const String& path, const access_mode mode)
-{
-	return ::CreateFileW(c_str(path),
-		mode == access_mode::read ? GENERIC_READ : GENERIC_READ | GENERIC_WRITE,
-		FILE_SHARE_READ | FILE_SHARE_WRITE,
-		0,
-		OPEN_EXISTING,
-		FILE_ATTRIBUTE_NORMAL,
-		0);
-}
+#endif
 
 } // win
+
 #endif // _WIN32
 
 /**
@@ -1148,10 +1152,10 @@ inline std::error_code last_error() noexcept
 
 template<typename String>
 file_handle_type open_file(const String& path, const access_mode mode,
-	std::error_code& error)
+		std::error_code& error)
 {
 	error.clear();
-	if (detail::empty(path))
+	if(detail::empty(path))
 	{
 		error = std::make_error_code(std::errc::invalid_argument);
 		return invalid_handle;
@@ -1160,9 +1164,9 @@ file_handle_type open_file(const String& path, const access_mode mode,
 	const auto handle = win::open_file_helper(path, mode);
 #else // POSIX
 	const auto handle = ::open(c_str(path),
-		mode == access_mode::read ? O_RDONLY : O_RDWR);
+			mode == access_mode::read ? O_RDONLY : O_RDWR);
 #endif
-	if (handle == invalid_handle)
+	if(handle == invalid_handle)
 	{
 		error = detail::last_error();
 	}
@@ -1174,7 +1178,7 @@ inline size_t query_file_size(file_handle_type handle, std::error_code& error)
 	error.clear();
 #ifdef _WIN32
 	LARGE_INTEGER file_size;
-	if (::GetFileSizeEx(handle, &file_size) == 0)
+	if(::GetFileSizeEx(handle, &file_size) == 0)
 	{
 		error = detail::last_error();
 		return 0;
@@ -1182,7 +1186,7 @@ inline size_t query_file_size(file_handle_type handle, std::error_code& error)
 	return static_cast<int64_t>(file_size.QuadPart);
 #else // POSIX
 	struct stat sbuf;
-	if (::fstat(handle, &sbuf) == -1)
+	if(::fstat(handle, &sbuf) == -1)
 	{
 		error = detail::last_error();
 		return 0;
@@ -1209,24 +1213,24 @@ inline mmap_context memory_map(const file_handle_type file_handle, const int64_t
 #ifdef _WIN32
 	const int64_t max_file_size = offset + length;
 	const auto file_mapping_handle = ::CreateFileMapping(
-		file_handle,
-		0,
-		mode == access_mode::read ? PAGE_READONLY : PAGE_READWRITE,
-		win::int64_high(max_file_size),
-		win::int64_low(max_file_size),
-		0);
-	if (file_mapping_handle == invalid_handle)
+			file_handle,
+			0,
+			mode == access_mode::read ? PAGE_READONLY : PAGE_READWRITE,
+			win::int64_high(max_file_size),
+			win::int64_low(max_file_size),
+			0);
+	if(file_mapping_handle == invalid_handle)
 	{
 		error = detail::last_error();
 		return {};
 	}
 	char* mapping_start = static_cast<char*>(::MapViewOfFile(
-		file_mapping_handle,
-		mode == access_mode::read ? FILE_MAP_READ : FILE_MAP_WRITE,
-		win::int64_high(aligned_offset),
-		win::int64_low(aligned_offset),
-		length_to_map));
-	if (mapping_start == nullptr)
+			file_mapping_handle,
+			mode == access_mode::read ? FILE_MAP_READ : FILE_MAP_WRITE,
+			win::int64_high(aligned_offset),
+			win::int64_low(aligned_offset),
+			length_to_map));
+	if(mapping_start == nullptr)
 	{
 		// Close file handle if mapping it failed.
 		::CloseHandle(file_mapping_handle);
@@ -1235,13 +1239,13 @@ inline mmap_context memory_map(const file_handle_type file_handle, const int64_t
 	}
 #else // POSIX
 	char* mapping_start = static_cast<char*>(::mmap(
-		0, // Don't give hint as to where to map.
-		length_to_map,
-		mode == access_mode::read ? PROT_READ : PROT_WRITE,
-		MAP_SHARED,
-		file_handle,
-		aligned_offset));
-	if (mapping_start == MAP_FAILED)
+			0, // Don't give hint as to where to map.
+			length_to_map,
+			mode == access_mode::read ? PROT_READ : PROT_WRITE,
+			MAP_SHARED,
+			file_handle,
+			aligned_offset));
+	if(mapping_start == MAP_FAILED)
 	{
 		error = detail::last_error();
 		return {};
@@ -1291,7 +1295,7 @@ template<access_mode AccessMode, typename ByteT>
 basic_mmap<AccessMode, ByteT>&
 basic_mmap<AccessMode, ByteT>::operator=(basic_mmap&& other)
 {
-	if (this != &other)
+	if(this != &other)
 	{
 		// First the existing mapping needs to be removed.
 		unmap();
@@ -1332,23 +1336,23 @@ basic_mmap<AccessMode, ByteT>::mapping_handle() const noexcept
 template<access_mode AccessMode, typename ByteT>
 template<typename String>
 void basic_mmap<AccessMode, ByteT>::map(const String& path, const size_type offset,
-	const size_type length, std::error_code& error)
+		const size_type length, std::error_code& error)
 {
 	error.clear();
-	if (detail::empty(path))
+	if(detail::empty(path))
 	{
 		error = std::make_error_code(std::errc::invalid_argument);
 		return;
 	}
 	const auto handle = detail::open_file(path, AccessMode, error);
-	if (error)
+	if(error)
 	{
 		return;
 	}
 
 	map(handle, offset, length, error);
 	// This MUST be after the call to map, as that sets this to true.
-	if (!error)
+	if(!error)
 	{
 		is_handle_internal_ = true;
 	}
@@ -1356,31 +1360,31 @@ void basic_mmap<AccessMode, ByteT>::map(const String& path, const size_type offs
 
 template<access_mode AccessMode, typename ByteT>
 void basic_mmap<AccessMode, ByteT>::map(const handle_type handle,
-	const size_type offset, const size_type length, std::error_code& error)
+		const size_type offset, const size_type length, std::error_code& error)
 {
 	error.clear();
-	if (handle == invalid_handle)
+	if(handle == invalid_handle)
 	{
 		error = std::make_error_code(std::errc::bad_file_descriptor);
 		return;
 	}
 
 	const auto file_size = detail::query_file_size(handle, error);
-	if (error)
+	if(error)
 	{
 		return;
 	}
 
-	if (offset + length > file_size)
+	if(offset + length > file_size)
 	{
 		error = std::make_error_code(std::errc::invalid_argument);
 		return;
 	}
 
 	const auto ctx = detail::memory_map(handle, offset,
-		length == map_entire_file ? (file_size - offset) : length,
-		AccessMode, error);
-	if (!error)
+			length == map_entire_file ? (file_size - offset) : length,
+			AccessMode, error);
+	if(!error)
 	{
 		// We must unmap the previous mapping that may have existed prior to this call.
 		// Note that this must only be invoked after a new mapping has been created in
@@ -1405,19 +1409,19 @@ typename std::enable_if<A == access_mode::write, void>::type
 basic_mmap<AccessMode, ByteT>::sync(std::error_code& error)
 {
 	error.clear();
-	if (!is_open())
+	if(!is_open())
 	{
 		error = std::make_error_code(std::errc::bad_file_descriptor);
 		return;
 	}
 
-	if (data())
+	if(data())
 	{
 #ifdef _WIN32
-		if (::FlushViewOfFile(get_mapping_start(), mapped_length_) == 0
-			|| ::FlushFileBuffers(file_handle_) == 0)
+		if(::FlushViewOfFile(get_mapping_start(), mapped_length_) == 0
+		   || ::FlushFileBuffers(file_handle_) == 0)
 #else // POSIX
-		if (::msync(get_mapping_start(), mapped_length_, MS_SYNC) != 0)
+		if(::msync(get_mapping_start(), mapped_length_, MS_SYNC) != 0)
 #endif
 		{
 			error = detail::last_error();
@@ -1425,7 +1429,7 @@ basic_mmap<AccessMode, ByteT>::sync(std::error_code& error)
 		}
 	}
 #ifdef _WIN32
-	if (::FlushFileBuffers(file_handle_) == 0)
+	if(::FlushFileBuffers(file_handle_) == 0)
 	{
 		error = detail::last_error();
 	}
@@ -1435,23 +1439,23 @@ basic_mmap<AccessMode, ByteT>::sync(std::error_code& error)
 template<access_mode AccessMode, typename ByteT>
 void basic_mmap<AccessMode, ByteT>::unmap()
 {
-	if (!is_open()) { return; }
+	if(!is_open()) { return; }
 	// TODO do we care about errors here?
 #ifdef _WIN32
-	if (is_mapped())
+	if(is_mapped())
 	{
 		::UnmapViewOfFile(get_mapping_start());
 		::CloseHandle(file_mapping_handle_);
 	}
 #else // POSIX
-	if (data_) { ::munmap(const_cast<pointer>(get_mapping_start()), mapped_length_); }
+	if(data_) { ::munmap(const_cast<pointer>(get_mapping_start()), mapped_length_); }
 #endif
 
 	// If `file_handle_` was obtained by our opening it (when map is called with
 	// a path, rather than an existing file handle), we need to close it,
 	// otherwise it must not be closed as it may still be used outside this
 	// instance.
-	if (is_handle_internal_)
+	if(is_handle_internal_)
 	{
 #ifdef _WIN32
 		::CloseHandle(file_handle_);
@@ -1482,7 +1486,7 @@ bool basic_mmap<AccessMode, ByteT>::is_mapped() const noexcept
 template<access_mode AccessMode, typename ByteT>
 void basic_mmap<AccessMode, ByteT>::swap(basic_mmap& other)
 {
-	if (this != &other)
+	if(this != &other)
 	{
 		using std::swap;
 		swap(data_, other.data_);
@@ -1517,7 +1521,7 @@ basic_mmap<AccessMode, ByteT>::conditional_sync()
 
 template<access_mode AccessMode, typename ByteT>
 bool operator==(const basic_mmap<AccessMode, ByteT>& a,
-	const basic_mmap<AccessMode, ByteT>& b)
+		const basic_mmap<AccessMode, ByteT>& b)
 {
 	return a.data() == b.data()
 		&& a.size() == b.size();
@@ -1525,41 +1529,41 @@ bool operator==(const basic_mmap<AccessMode, ByteT>& a,
 
 template<access_mode AccessMode, typename ByteT>
 bool operator!=(const basic_mmap<AccessMode, ByteT>& a,
-	const basic_mmap<AccessMode, ByteT>& b)
+		const basic_mmap<AccessMode, ByteT>& b)
 {
 	return !(a == b);
 }
 
 template<access_mode AccessMode, typename ByteT>
 bool operator<(const basic_mmap<AccessMode, ByteT>& a,
-	const basic_mmap<AccessMode, ByteT>& b)
+		const basic_mmap<AccessMode, ByteT>& b)
 {
-	if (a.data() == b.data()) { return a.size() < b.size(); }
+	if(a.data() == b.data()) { return a.size() < b.size(); }
 	return a.data() < b.data();
 }
 
 template<access_mode AccessMode, typename ByteT>
 bool operator<=(const basic_mmap<AccessMode, ByteT>& a,
-	const basic_mmap<AccessMode, ByteT>& b)
+		const basic_mmap<AccessMode, ByteT>& b)
 {
 	return !(a > b);
 }
 
 template<access_mode AccessMode, typename ByteT>
 bool operator>(const basic_mmap<AccessMode, ByteT>& a,
-	const basic_mmap<AccessMode, ByteT>& b)
+		const basic_mmap<AccessMode, ByteT>& b)
 {
-	if (a.data() == b.data()) { return a.size() > b.size(); }
+	if(a.data() == b.data()) { return a.size() > b.size(); }
 	return a.data() > b.data();
 }
 
 template<access_mode AccessMode, typename ByteT>
 bool operator>=(const basic_mmap<AccessMode, ByteT>& a,
-	const basic_mmap<AccessMode, ByteT>& b)
+		const basic_mmap<AccessMode, ByteT>& b)
 {
 	return !(a < b);
 }
 
 } // namespace mio
 
-#endif // MIO_MMAP_HEADER
+#endif // __MIO_MMAP_HEADER__
