@@ -35,12 +35,16 @@
 
 #if __cplusplus >= 201402L
 #  define MIO_DEPRECATED [[deprecated]]
+#  define MIO_DEPRECATED_REASON(R) [[deprecated(R)]]
 #elif defined(_MSC_VER)
 #  define MIO_DEPRECATED __declspec(deprecated)
+#  define MIO_DEPRECATED_REASON(R) __declspec(deprecated(R))
 #elif defined(__GNUC__) || defined(__clang__)
 #  define MIO_DEPRECATED __attribute__((deprecated))
+#  define MIO_DEPRECATED_REASON(R) __attribute__((deprecated(R)))
 #else
 #  define MIO_DEPRECATED
+#  define MIO_DEPRECATED_REASON(R)
 #endif
 
 #if __cplusplus >= 201703L
@@ -62,17 +66,29 @@
 #endif
 
 #if __cplusplus >= 202002L
+#  ifdef __cpp_concepts
+#    define MIO_CONCEPTS_SUPPORT
+#  endif
+// commented out by now as it is unused
+// #  ifdef __cpp_lib_concepts
+// #    include <concepts>
+// #    define MIO_CONCEPTS_LIB_SUPPORT
+// #  endif
 #  ifdef __cpp_lib_ranges
 #    include <ranges>
 #    define MIO_RANGES_SUPPORT
 #  endif
 #endif
 
+#ifdef MIO_CONCEPTS_SUPPORT
+#  define MIO_FUNCTION_TEMPLATE(R) template<typename F, typename... Args> requires std::is_invocable_r_v<R, F, Args...>
+#elif __cplusplus >= 201703L
+#  define MIO_FUNCTION_TEMPLATE(R) template<typename F, typename... Args, typename = std::enable_if_t<std::is_invocable_r_v<R, F, Args...>>>
+#else
+#  define MIO_FUNCTION_TEMPLATE(R) template<typename F, typename... Args>
+#endif
+
 #ifdef _WIN32
-#  ifndef _UNICODE
-#    define _UNICODE
-#    define __MIO_DEFINE__UNICODE
-#  endif
 #  ifndef NOMINMAX
 #    define NOMINMAX
 #    define __MIO_DEFINE_NOMINMAX
@@ -82,10 +98,6 @@
 #    define __MIO_DEFINE_WIN32_LEAN_AND_MEAN
 #  endif
 #  include <windows.h>
-#  ifdef __MIO_DEFINE__UNICODE
-#    undef _UNICODE
-#    undef __MIO_DEFINE__UNICODE
-#  endif
 #  ifdef __MIO_DEFINE_NOMINMAX
 #    undef NOMINMAX
 #    undef __MIO_DEFINE_NOMINMAX
@@ -104,6 +116,78 @@
 
 namespace mio
 {
+
+struct handle_wrapper final
+{
+#ifdef _WIN32
+	using underlying_type = typename HANDLE;
+#else
+	using underlying_type = int;
+#endif
+private:
+	underlying_type _handle;
+public:
+	handle_wrapper() noexcept : _handle(INVALID_HANDLE_VALUE) {}
+
+	MIO_FUNCTION_TEMPLATE(underlying_type)
+	handle_wrapper(F&& f, Args&&... args) : _handle(f(std::forward<Args>(args)...)) {}
+
+	handle_wrapper(const handle_wrapper&) = delete;
+
+	handle_wrapper(handle_wrapper&& o) noexcept : handle_wrapper()
+	{
+		std::swap(_handle, o._handle);
+	}
+
+	handle_wrapper& operator=(const handle_wrapper&) = delete;
+
+	handle_wrapper& operator=(handle_wrapper&& o)
+	{
+		close();
+		std::swap(_handle, o._handle);
+		return *this;
+	}
+
+	~handle_wrapper() noexcept
+	{
+		close();
+	}
+
+	MIO_DEPRECATED_REASON("use `unsafe()` instead")
+	MIO_NODISCARD
+	operator underlying_type() &
+	{
+		return unsafe();
+	}
+
+	void close()
+	{
+		if (_handle != INVALID_HANDLE_VALUE)
+		{
+#ifdef _WIN32
+			if (!::CloseHandle(_handle))
+				throw std::system_error(GetLastError(), std::system_category());
+#else
+			if (::close(_handle))
+				throw std::system_error(errno, std::system_category());
+#endif
+			_handle = INVALID_HANDLE_VALUE;
+		}
+	}
+
+	MIO_FUNCTION_TEMPLATE(underlying_type)
+	void emplace(F&& f, Args&&... args) &
+	{
+		close();
+		_handle = f(std::forward<Args>(args)...);
+	}
+
+	MIO_NODISCARD
+	underlying_type unsafe() &
+	{
+		return _handle;
+	}
+};
 
 /**
  * This is used by `basic_mmap` to determine whether to create a read-only or
@@ -124,10 +208,6 @@ using file_handle_type = HANDLE;
 #else
 using file_handle_type = int;
 #endif
-
-// This value represents an invalid file handle type. This can be used to
-// determine whether `basic_mmap::file_handle` is valid, for example.
-const static file_handle_type invalid_handle = INVALID_HANDLE_VALUE;
 
 template<access_mode AccessMode, typename ByteT>
 struct basic_mmap
@@ -234,7 +314,7 @@ public:
 	handle_type mapping_handle() const noexcept;
 
 	/** Returns whether a valid memory mapping has been created. */
-	bool is_open() const noexcept { return file_handle_ != invalid_handle; }
+	bool is_open() const noexcept { return file_handle_ != INVALID_HANDLE_VALUE; }
 
 	/**
 	 * Returns true if no mapping was established, that is, conceptually the
@@ -664,12 +744,12 @@ public:
 	 */
 	handle_type file_handle() const noexcept
 	{
-		return pimpl_ ? pimpl_->file_handle() : invalid_handle;
+		return pimpl_ ? pimpl_->file_handle() : INVALID_HANDLE_VALUE;
 	}
 
 	handle_type mapping_handle() const noexcept
 	{
-		return pimpl_ ? pimpl_->mapping_handle() : invalid_handle;
+		return pimpl_ ? pimpl_->mapping_handle() : INVALID_HANDLE_VALUE;
 	}
 
 	/** Returns whether a valid memory mapping has been created. */
@@ -1158,7 +1238,7 @@ file_handle_type open_file(const String& path, const access_mode mode,
 	if(detail::empty(path))
 	{
 		error = std::make_error_code(std::errc::invalid_argument);
-		return invalid_handle;
+		return INVALID_HANDLE_VALUE;
 	}
 #ifdef _WIN32
 	const auto handle = win::open_file_helper(path, mode);
@@ -1166,7 +1246,7 @@ file_handle_type open_file(const String& path, const access_mode mode,
 	const auto handle = ::open(c_str(path),
 			mode == access_mode::read ? O_RDONLY : O_RDWR);
 #endif
-	if(handle == invalid_handle)
+	if(handle == INVALID_HANDLE_VALUE)
 	{
 		error = detail::last_error();
 	}
@@ -1219,7 +1299,7 @@ inline mmap_context memory_map(const file_handle_type file_handle, const int64_t
 			win::int64_high(max_file_size),
 			win::int64_low(max_file_size),
 			0);
-	if(file_mapping_handle == invalid_handle)
+	if(file_mapping_handle == INVALID_HANDLE_VALUE)
 	{
 		error = detail::last_error();
 		return {};
@@ -1285,9 +1365,9 @@ basic_mmap<AccessMode, ByteT>::basic_mmap(basic_mmap&& other)
 {
 	other.data_ = nullptr;
 	other.length_ = other.mapped_length_ = 0;
-	other.file_handle_ = invalid_handle;
+	other.file_handle_ = INVALID_HANDLE_VALUE;
 #ifdef _WIN32
-	other.file_mapping_handle_ = invalid_handle;
+	other.file_mapping_handle_ = INVALID_HANDLE_VALUE;
 #endif
 }
 
@@ -1313,9 +1393,9 @@ basic_mmap<AccessMode, ByteT>::operator=(basic_mmap&& other)
 		// just moved into this.
 		other.data_ = nullptr;
 		other.length_ = other.mapped_length_ = 0;
-		other.file_handle_ = invalid_handle;
+		other.file_handle_ = INVALID_HANDLE_VALUE;
 #ifdef _WIN32
-		other.file_mapping_handle_ = invalid_handle;
+		other.file_mapping_handle_ = INVALID_HANDLE_VALUE;
 #endif
 		other.is_handle_internal_ = false;
 	}
@@ -1363,7 +1443,7 @@ void basic_mmap<AccessMode, ByteT>::map(const handle_type handle,
 		const size_type offset, const size_type length, std::error_code& error)
 {
 	error.clear();
-	if(handle == invalid_handle)
+	if(handle == INVALID_HANDLE_VALUE)
 	{
 		error = std::make_error_code(std::errc::bad_file_descriptor);
 		return;
@@ -1467,9 +1547,9 @@ void basic_mmap<AccessMode, ByteT>::unmap()
 	// Reset fields to their default values.
 	data_ = nullptr;
 	length_ = mapped_length_ = 0;
-	file_handle_ = invalid_handle;
+	file_handle_ = INVALID_HANDLE_VALUE;
 #ifdef _WIN32
-	file_mapping_handle_ = invalid_handle;
+	file_mapping_handle_ = INVALID_HANDLE_VALUE;
 #endif
 }
 
@@ -1477,7 +1557,7 @@ template<access_mode AccessMode, typename ByteT>
 bool basic_mmap<AccessMode, ByteT>::is_mapped() const noexcept
 {
 #ifdef _WIN32
-	return file_mapping_handle_ != invalid_handle;
+	return file_mapping_handle_ != INVALID_HANDLE_VALUE;
 #else // POSIX
 	return is_open();
 #endif

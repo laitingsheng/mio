@@ -93,7 +93,7 @@ int main()
         CHECK_INVALID_MMAP(m);
 
         // Invalid handle?
-        m = mio::make_mmap_source(mio::invalid_handle, 0, 0, error);
+        m = mio::make_mmap_source(INVALID_HANDLE_VALUE, 0, 0, error);
         CHECK_INVALID_MMAP(m);
 
         // Invalid offset?
