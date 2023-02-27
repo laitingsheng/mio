@@ -26,42 +26,40 @@
 
 #include <algorithm>
 #include <array>
-#include <iterator>
-#include <locale>
 #include <memory>
 #include <string>
 #include <system_error>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
-// commented out by now as it is unused
-// #if !defined(_MSC_VER) || !_MSVC_TRADITIONAL
+// #if !defined(_MSC_VER) || defined(_MSVC_TRADITIONAL) && !_MSVC_TRADITIONAL
 // #define MIO_STD_PP
 // #endif
 
 #if __cplusplus >= 201402L
-#  define MIO_DEPRECATED [[deprecated]]
-#  define MIO_DEPRECATED_REASON(R) [[deprecated(R)]]
+#  define __MIO_DEPRECATED [[deprecated]]
+#  define __MIO_DEPRECATED_REASON(R) [[deprecated(R)]]
 #elif defined(_MSC_VER)
-#  define MIO_DEPRECATED __declspec(deprecated)
-#  define MIO_DEPRECATED_REASON(R) __declspec(deprecated(R))
+#  define __MIO_DEPRECATED __declspec(deprecated)
+#  define __MIO_DEPRECATED_REASON(R) __declspec(deprecated(R))
 #elif defined(__GNUC__) || defined(__clang__)
-#  define MIO_DEPRECATED __attribute__((deprecated))
-#  define MIO_DEPRECATED_REASON(R) __attribute__((deprecated(R)))
+#  define __MIO_DEPRECATED __attribute__((deprecated))
+#  define __MIO_DEPRECATED_REASON(R) __attribute__((deprecated(R)))
 #else
-#  define MIO_DEPRECATED
-#  define MIO_DEPRECATED_REASON(R)
+#  define __MIO_DEPRECATED
+#  define __MIO_DEPRECATED_REASON(R)
 #endif
 
 #if __cplusplus >= 201703L
-#  define MIO_NODISCARD [[nodiscard]]
+#  define __MIO_NODISCARD [[nodiscard]]
 // _Check_return_ raises compiler error which is not identical to the standard attribute
 // #elif defined(_MSC_VER)
-// #  define MIO_NODISCARD _Check_return_
+// #  define __MIO_NODISCARD _Check_return_
 #elif defined(__GNUC__) || defined(__clang__)
-#  define MIO_NODISCARD __attribute__((warn_unused_result))
+#  define __MIO_NODISCARD __attribute__((warn_unused_result))
 #else
-#  define MIO_NODISCARD
+#  define __MIO_NODISCARD
 #endif
 
 #if __cplusplus >= 201703L
@@ -72,14 +70,12 @@
 #endif
 
 #if __cplusplus >= 202002L
-// commented out by now as it is unused
 // #ifdef MIO_STD_PP
 // #  define MIO_STD_PP_V
 // #endif
 #  ifdef __cpp_concepts
 #    define MIO_CONCEPTS_SUPPORT
 #  endif
-// commented out by now as it is unused
 // #  ifdef __cpp_lib_concepts
 // #    include <concepts>
 // #    define MIO_CONCEPTS_LIB_SUPPORT
@@ -91,37 +87,31 @@
 #endif
 
 #ifdef MIO_CONCEPTS_SUPPORT
-#  define MIO_FUNCTION_TEMPLATE(R) template<typename F, typename... Args> requires std::is_invocable_r_v<R, F, Args...>
+#  define __MIO_FUNCTION_TEMPLATE(R) template<typename F, typename... Args> requires std::is_invocable_r_v<R, F, Args...>
 #elif __cplusplus >= 201703L
-#  define MIO_FUNCTION_TEMPLATE(R) template<typename F, typename... Args, typename = std::enable_if_t<std::is_invocable_r_v<R, F, Args...>>>
+#  define __MIO_FUNCTION_TEMPLATE(R) template<typename F, typename... Args, typename = std::enable_if_t<std::is_invocable_r_v<R, F, Args...>>>
 #else
-#  define MIO_FUNCTION_TEMPLATE(R) template<typename F, typename... Args>
+#  define __MIO_FUNCTION_TEMPLATE(R) template<typename F, typename... Args>
 #endif
 
 #ifdef _WIN32
-#  ifndef NOMINMAX
-#    define NOMINMAX
-#    define __MIO_DEFINE_NOMINMAX
-#  endif
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
 #    define __MIO_DEFINE_WIN32_LEAN_AND_MEAN
 #  endif
 #  include <windows.h>
-#  ifdef __MIO_DEFINE_NOMINMAX
-#    undef NOMINMAX
-#    undef __MIO_DEFINE_NOMINMAX
-#  endif
 #  ifdef __MIO_DEFINE_WIN32_LEAN_AND_MEAN
 #    undef WIN32_LEAN_AND_MEAN
 #    undef __MIO_DEFINE_WIN32_LEAN_AND_MEAN
 #  endif
+#  define __MIO_INVALID_HANDLE_VALUE INVALID_HANDLE_VALUE
 #else
 #  include <unistd.h>
 #  include <fcntl.h>
 #  include <sys/mman.h>
 #  include <sys/stat.h>
 #  define INVALID_HANDLE_VALUE -1
+#  define __MIO_INVALID_HANDLE_VALUE -1
 #endif
 
 namespace mio
@@ -139,6 +129,15 @@ enum class access_mode
 namespace detail
 {
 
+inline static void get_last_error_code(std::error_code& ec) noexcept
+{
+#ifdef _WIN32
+	ec.assign(GetLastError(), std::system_category());
+#else
+	ec.assign(errno, std::system_category());
+#endif
+}
+
 struct handle_wrapper final
 {
 #ifdef _WIN32
@@ -149,16 +148,24 @@ struct handle_wrapper final
 private:
 	underlying_type _handle;
 public:
-	handle_wrapper() noexcept : _handle(INVALID_HANDLE_VALUE) {}
+	handle_wrapper() noexcept : _handle(__MIO_INVALID_HANDLE_VALUE) {}
 
-	MIO_FUNCTION_TEMPLATE(underlying_type)
-	handle_wrapper(F&& f, Args&&... args) : _handle(f(std::forward<Args>(args)...)) {}
+	__MIO_FUNCTION_TEMPLATE(underlying_type)
+	handle_wrapper(F&& f, Args&&... args) : _handle(f(std::forward<Args>(args)...))
+	{
+		if (_handle == __MIO_INVALID_HANDLE_VALUE)
+		{
+			std::error_code ec;
+			get_last_error_code(ec);
+			throw std::system_error(ec);
+		}
+	}
 
 	handle_wrapper(const handle_wrapper&) = delete;
 
-	handle_wrapper(handle_wrapper&& o) noexcept : handle_wrapper()
+	handle_wrapper(handle_wrapper&& o) noexcept : _handle(o._handle)
 	{
-		std::swap(_handle, o._handle);
+		o._handle = __MIO_INVALID_HANDLE_VALUE;
 	}
 
 	handle_wrapper& operator=(const handle_wrapper&) = delete;
@@ -175,119 +182,202 @@ public:
 		close();
 	}
 
-	MIO_NODISCARD
-	inline operator bool() const noexcept
+	inline void close()
 	{
-		return valid();
+		std::error_code ec;
+		close(ec);
+		if (ec)
+			throw std::system_error(ec);
 	}
 
-	MIO_DEPRECATED_REASON("use `raw()` instead")
-	MIO_NODISCARD
-	inline operator underlying_type() &
+	void close(std::error_code& ec) noexcept
 	{
-		return raw();
-	}
-
-	void close()
-	{
-		if (_handle != INVALID_HANDLE_VALUE)
+		if (_handle != __MIO_INVALID_HANDLE_VALUE)
 		{
 #ifdef _WIN32
 			if (!::CloseHandle(_handle))
-				throw std::system_error(GetLastError(), std::system_category());
 #else
 			if (::close(_handle))
-				throw std::system_error(errno, std::system_category());
 #endif
-			_handle = INVALID_HANDLE_VALUE;
+				get_last_error_code(ec);
+			_handle = __MIO_INVALID_HANDLE_VALUE;
 		}
 	}
 
-	MIO_FUNCTION_TEMPLATE(underlying_type)
+	__MIO_FUNCTION_TEMPLATE(underlying_type)
 	void emplace(F&& f, Args&&... args) &
 	{
-		close();
-		_handle = f(std::forward<Args>(args)...);
+		std::error_code ec;
+		emplace(ec, std::forward<F>(f), std::forward<Args>(args)...);
+		if (ec)
+			throw std::system_error(ec);
 	}
 
-	MIO_NODISCARD
+	__MIO_FUNCTION_TEMPLATE(underlying_type)
+	void emplace(std::error_code& ec, F&& f, Args&... args) & noexcept
+	{
+		close(ec);
+		if (ec)
+			return;
+		_handle = f(std::forward<Args>(args)...);
+		if (_handle == __MIO_INVALID_HANDLE_VALUE)
+			get_last_error_code(ec);
+	}
+
+	__MIO_NODISCARD
+	bool empty() const noexcept
+	{
+		return _handle == __MIO_INVALID_HANDLE_VALUE;
+	}
+
+	__MIO_NODISCARD
 	underlying_type raw() &
 	{
 		return _handle;
 	}
 
-	MIO_NODISCARD
+	__MIO_NODISCARD
 	bool valid() const noexcept
 	{
-		return _handle != INVALID_HANDLE_VALUE;
+		return _handle != __MIO_INVALID_HANDLE_VALUE;
 	}
 };
 
 template<access_mode>
-struct file_access_mode_trait;
+struct access_mode_trait;
 
 template<>
-struct file_access_mode_trait<access_mode::READ> final
+struct access_mode_trait<access_mode::READ> final
 {
 #ifdef _WIN32
 	static constexpr auto open_flags = GENERIC_READ;
 	static constexpr auto access_flags = OPEN_EXISTING;
+	static constexpr auto mmap_flags = FILE_MAP_READ;
 #else
 	static constexpr auto open_flags = O_RDONLY;
+	static constexpr auto access_flags = PROT_READ;
+	static constexpr auto mmap_flags = MAP_SHARED;
 #endif
 };
 
 template<>
-struct file_access_mode_trait<access_mode::WRITE> final
+struct access_mode_trait<access_mode::WRITE> final
 {
 #ifdef _WIN32
 	static constexpr auto open_flags = GENERIC_READ | GENERIC_WRITE;
 	static constexpr auto access_flags = OPEN_ALWAYS;
+	static constexpr auto mmap_flags = FILE_MAP_READ | FILE_MAP_WRITE;
 #else
 	static constexpr auto open_flags = O_CREAT | O_RDWR;
+	static constexpr auto access_flags = PROT_READ | PROT_WRITE;
+	static constexpr auto mmap_flags = MAP_SHARED;
 #endif
 };
 
 } // namespace mio::experimental::detail
 
+#ifdef _WIN32
+#  define __MIO_CREATE_FILE_PARAMETER(S) ::CreateFile##S, path.c_str(), _trait::open_flags, FILE_SHARE_READ | FILE_SHARE_WRITE, _trait::access_flags, FILE_ATTRIBUTE_NORMAL, nullptr
+#else
+#  define __MIO_CREATE_FILE_PARAMETER() ::open, path.c_str(), _trait::open_flags
+#endif
+
 template<access_mode M>
-class file final
+class file_mmap final
 {
-	using _trait = detail::file_access_mode_trait<M>;
+	using _trait = detail::access_mode_trait<M>;
 
 	detail::handle_wrapper _handle;
+#ifdef _WIN32
+	detail::handle_wrapper _mmap_handle;
+#endif
+	void *_ptr;
+	size_t _size;
 public:
-	file() noexcept = default;
+	file_mmap() noexcept : _handle() {}
 
 #ifdef _WIN32
-	file(const std::wstring& path) : _handle(
-		::CreateFileW,
-		path.c_str(),
-		_trait::open_flags,
-		FILE_SHARE_READ | FILE_SHARE_WRITE,
-		_trait::access_flags,
-		FILE_ATTRIBUTE_NORMAL,
-		nullptr
-	) {}
+	file_mmap(const std::wstring& path) :
+		_handle(__MIO_CREATE_FILE_PARAMETER(W)),
+		_mmap_handle()
+	{}
 
-	MIO_DEPRECATED_REASON("ANSI version of Windows API is considered deprecated")
-	file(const std::string& path) : _handle(
-		::CreateFileA,
-		path.c_str(),
-		_trait::open_flags,
-		FILE_SHARE_READ | FILE_SHARE_WRITE,
-		_trait::access_flags,
-		FILE_ATTRIBUTE_NORMAL,
-		nullptr
-	) {}
+	__MIO_DEPRECATED_REASON("ANSI version of Windows API is considered deprecated")
+	file_mmap(const std::string& path) :
+		_handle(__MIO_CREATE_FILE_PARAMETER(A)),
+		_mmap_handle()
+	{}
 #else
-	file(const std::string& path) : _handle(::open, path.c_str(), _trait::open_flags) {}
+	file_mmap(const std::string& path) : _handle(__MIO_CREATE_FILE_PARAMETER()) {}
 #endif
 
 #ifdef MIO_FILESYSTEM_SUPPORT
-	inline file(const std::filesystem::path& path) : file(path.native()) {}
+	inline file_mmap(const std::filesystem::path& path) : file_mmap(path.native()) {}
 #endif
 
+	void close()
+	{
+		_handle.close();
+	}
+
+	__MIO_NODISCARD
+	detail::handle_wrapper& handle() & noexcept
+	{
+		return _handle;
+	}
+
+#ifdef _WIN32
+	void open(const std::wstring& path)
+	{
+		_handle.emplace(__MIO_CREATE_FILE_PARAMETER(W));
+	}
+
+	__MIO_DEPRECATED_REASON("ANSI version of Windows API is considered deprecated")
+	void open(const std::string& path)
+	{
+		_handle.emplace(__MIO_CREATE_FILE_PARAMETER(A));
+	}
+#else
+	void open(const std::string& path)
+	{
+		_handle.emplace(__MIO_CREATE_FILE_PARAMETER());
+	}
+#endif
+
+#ifdef MIO_FILESYSTEM_SUPPORT
+	inline void open(const std::filesystem::path& path)
+	{
+		open(path.native());
+	}
+#endif
+
+	__MIO_NODISCARD
+	bool opened() const noexcept
+	{
+		return _handle.valid();
+	}
+
+	size_t resize(size_t size)
+	{
+#ifdef _WIN32
+		LONG high = size >> 32, low = ::SetFilePointer(_handle.unsafe(), size & 0xffffffff, &high, FILE_BEGIN);
+		if (low == INVALID_SET_FILE_POINTER)
+		{
+			auto ec = GetLastError();
+			if (ec != NO_ERROR)
+				throw std::system_error(ec, std::system_category());
+		}
+		if (!::SetEndOfFile(_handle.unsafe()))
+			throw std::system_error(GetLastError(), std::system_category());
+		return (high << 32) | low;
+#else
+		if (::ftruncate(_handle.raw(), size))
+			throw std::system_error(errno, std::system_category());
+		return size;
+#endif
+	}
+
+	__MIO_NODISCARD
 	size_t size()
 	{
 #if _WIN32
@@ -307,6 +397,8 @@ public:
 #endif
 	}
 };
+
+#undef __MIO_CREATE_FILE_PARAMETER
 
 } // namespace mio::experimental
 
@@ -1246,28 +1338,28 @@ F( \
 	0 \
 );
 
-MIO_DEPRECATED
-MIO_NODISCARD
+__MIO_DEPRECATED
+__MIO_NODISCARD
 inline file_handle_type open_file_helper(LPCSTR path, const access_mode mode)
 {
 	return __MIO_DETAIL_WIN32_CREATE_FILE(::CreateFileA, path, mode);
 }
 
-MIO_DEPRECATED
-MIO_NODISCARD
+__MIO_DEPRECATED
+__MIO_NODISCARD
 inline file_handle_type open_file_helper(LPCWSTR path, const access_mode mode)
 {
 	return __MIO_DETAIL_WIN32_CREATE_FILE(::CreateFileW, path, mode);
 }
 
-MIO_DEPRECATED
-MIO_NODISCARD
+__MIO_DEPRECATED
+__MIO_NODISCARD
 inline file_handle_type open_file_helper(const std::string& path, const access_mode mode)
 {
 	return __MIO_DETAIL_WIN32_CREATE_FILE(::CreateFileA, path.c_str(), mode);
 }
 
-MIO_NODISCARD
+__MIO_NODISCARD
 inline file_handle_type open_file_helper(const std::wstring& path, const access_mode mode)
 {
 	return __MIO_DETAIL_WIN32_CREATE_FILE(::CreateFileW, path.c_str(), mode);
@@ -1277,7 +1369,7 @@ inline file_handle_type open_file_helper(const std::wstring& path, const access_
 
 #ifdef MIO_FILESYSTEM_SUPPORT
 
-MIO_NODISCARD
+__MIO_NODISCARD
 inline file_handle_type open_file_helper(const std::filesystem::path& path, const access_mode mode)
 {
 	return open_file_helper(path.wstring(), mode);
@@ -1287,7 +1379,7 @@ inline file_handle_type open_file_helper(const std::filesystem::path& path, cons
 
 #ifdef MIO_RANGES_SUPPORT
 
-MIO_NODISCARD
+__MIO_NODISCARD
 inline file_handle_type open_file_helper(const std::ranges::contiguous_range auto& path, const access_mode mode)
 {
 	return open_file_helper(
@@ -1299,21 +1391,21 @@ inline file_handle_type open_file_helper(const std::ranges::contiguous_range aut
 #else
 
 template<typename T, size_t N>
-MIO_NODISCARD
+__MIO_NODISCARD
 inline file_handle_type open_file_helper(const T (&path)[N], const access_mode mode)
 {
 	return open_file_helper(std::basic_string<T> { path, N }, mode);
 }
 
 template<typename T, size_t N>
-MIO_NODISCARD
+__MIO_NODISCARD
 inline file_handle_type open_file_helper(const std::array<T, N>& path, const access_mode mode)
 {
 	return open_file_helper(std::basic_string<T> { path.data(), N }, mode);
 }
 
 template<typename T>
-MIO_NODISCARD
+__MIO_NODISCARD
 inline file_handle_type open_file_helper(const std::vector<T>& path, const access_mode mode)
 {
 	return open_file_helper(std::basic_string<T> { path.data(), path.size() }, mode);
@@ -1324,7 +1416,7 @@ inline file_handle_type open_file_helper(const std::vector<T>& path, const acces
 #ifdef MIO_STRING_VIEW_SUPPORT
 
 template<typename T>
-MIO_NODISCARD
+__MIO_NODISCARD
 inline file_handle_type open_file_helper(const std::basic_string_view<T> path, const access_mode mode)
 {
 	return open_file_helper(std::basic_string<T>(path), mode);
@@ -1766,5 +1858,12 @@ bool operator>=(const basic_mmap<AccessMode, ByteT>& a,
 }
 
 } // namespace mio
+
+#undef __MIO_RETURN_TYPE_HINT
+#undef __MIO_DEPRECATED
+#undef __MIO_DEPRECATED_REASON
+#undef __MIO_NODISCARD
+#undef __MIO_FUNCTION_TEMPLATE
+#undef __MIO_INVALID_HANDLE_VALUE
 
 #endif // __MIO_MMAP_HEADER__
