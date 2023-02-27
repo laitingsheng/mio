@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <array>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <type_traits>
@@ -129,7 +130,7 @@ enum class access_mode
 namespace detail
 {
 
-inline static void get_last_error_code(std::error_code& ec) noexcept
+inline static void _last_error(std::error_code& ec) noexcept
 {
 #ifdef _WIN32
 	ec.assign(GetLastError(), std::system_category());
@@ -156,7 +157,7 @@ public:
 		if (_handle == __MIO_INVALID_HANDLE_VALUE)
 		{
 			std::error_code ec;
-			get_last_error_code(ec);
+			_last_error(ec);
 			throw std::system_error(ec);
 		}
 	}
@@ -199,13 +200,13 @@ public:
 #else
 			if (::close(_handle))
 #endif
-				get_last_error_code(ec);
+				_last_error(ec);
 			_handle = __MIO_INVALID_HANDLE_VALUE;
 		}
 	}
 
 	__MIO_FUNCTION_TEMPLATE(underlying_type)
-	void emplace(F&& f, Args&&... args) &
+	inline void emplace(F&& f, Args&&... args) &
 	{
 		std::error_code ec;
 		emplace(ec, std::forward<F>(f), std::forward<Args>(args)...);
@@ -221,13 +222,7 @@ public:
 			return;
 		_handle = f(std::forward<Args>(args)...);
 		if (_handle == __MIO_INVALID_HANDLE_VALUE)
-			get_last_error_code(ec);
-	}
-
-	__MIO_NODISCARD
-	bool empty() const noexcept
-	{
-		return _handle == __MIO_INVALID_HANDLE_VALUE;
+			_last_error(ec);
 	}
 
 	__MIO_NODISCARD
@@ -252,6 +247,7 @@ struct access_mode_trait<access_mode::READ> final
 #ifdef _WIN32
 	static constexpr auto open_flags = GENERIC_READ;
 	static constexpr auto access_flags = OPEN_EXISTING;
+	static constexpr auto page_flags = PAGE_READONLY;
 	static constexpr auto mmap_flags = FILE_MAP_READ;
 #else
 	static constexpr auto open_flags = O_RDONLY;
@@ -266,6 +262,7 @@ struct access_mode_trait<access_mode::WRITE> final
 #ifdef _WIN32
 	static constexpr auto open_flags = GENERIC_READ | GENERIC_WRITE;
 	static constexpr auto access_flags = OPEN_ALWAYS;
+	static constexpr auto page_flags = PAGE_READWRITE;
 	static constexpr auto mmap_flags = FILE_MAP_READ | FILE_MAP_WRITE;
 #else
 	static constexpr auto open_flags = O_CREAT | O_RDWR;
@@ -287,67 +284,201 @@ class file_mmap final
 {
 	using _trait = detail::access_mode_trait<M>;
 
+	__MIO_NODISCARD
+	inline static size_t _align_offset(size_t offset) noexcept
+	{
+#ifdef _WIN32
+		::SYSTEM_INFO info;
+		::GetSystemInfo(&info);
+		size_t page_size = info.dwAllocationGranularity;
+#else
+		size_t page_size = ::sysconf(_SC_PAGE_SIZE);
+#endif
+		return offset / page_size * page_size;
+	}
+
 	detail::handle_wrapper _handle;
 #ifdef _WIN32
 	detail::handle_wrapper _mmap_handle;
 #endif
+	size_t _size, _offset;
 	void *_ptr;
-	size_t _size;
-public:
-	file_mmap() noexcept : _handle() {}
+
+	inline void _map()
+	{
+		std::error_code ec;
+		_map(ec);
+		if (ec)
+			throw std::system_error(ec);
+		if (!_ptr)
+			throw std::length_error("cannot map empty file");
+	}
+
+	inline void _map(std::error_code& ec) noexcept
+	{
+		if (!_size)
+		{
+			_size = file_size(ec);
+			if (ec || !_size)
+				return;
+		}
+		size_t page_offset;
+		if (_offset)
+		{
+			page_offset = _align_offset(_offset);
+			_offset -= page_offset;
+		}
+		else
+			page_offset = 0;
+#ifdef _WIN32
+		size_t total_size = _offset + _size;
+		_mmap_handle.emplace(
+			ec,
+			::CreateFileMappingW,
+			_handle.raw(),
+			_trait::page_flags,
+			total_size >> 32,
+			total_size & 0xffffffff,
+			nullptr
+		);
+		if (ec)
+			return;
+		_ptr = ::MapViewOfFile(
+			_mmap_handle.raw(),
+			_trait::mmap_flags,
+			page_offset >> 32,
+			page_offset & 0xffffffff,
+			total_size
+		);
+		if (!_ptr)
+#else
+		_ptr = ::mmap(
+			nullptr,
+			_offset + _size,
+			_trait::access_flags,
+			_trait::mmap_flags,
+			_handle.raw(),
+			page_offset
+		);
+		if (_ptr == MAP_FAILED)
+#endif
+			detail::_last_error(ec);
+	}
 
 #ifdef _WIN32
-	file_mmap(const std::wstring& path) :
-		_handle(__MIO_CREATE_FILE_PARAMETER(W)),
-		_mmap_handle()
-	{}
+	void _open(std::error_code& ec, const std::wstring& path) noexcept
+	{
+		_handle.emplace(ec, __MIO_CREATE_FILE_PARAMETER(W));
+	}
 
 	__MIO_DEPRECATED_REASON("ANSI version of Windows API is considered deprecated")
-	file_mmap(const std::string& path) :
-		_handle(__MIO_CREATE_FILE_PARAMETER(A)),
-		_mmap_handle()
-	{}
-#else
-	file_mmap(const std::string& path) : _handle(__MIO_CREATE_FILE_PARAMETER()) {}
 #endif
+	void _open(std::error_code& ec, const std::string& path) noexcept
+	{
+#ifdef _WIN32
+		_handle.emplace(ec, __MIO_CREATE_FILE_PARAMETER(A));
+#else
+		_handle.emplace(ec, __MIO_CREATE_FILE_PARAMETER());
+#endif
+	}
+public:
+	file_mmap() noexcept :
+		_handle(),
+#ifdef _WIN32
+		_mmap_handle(),
+#endif
+		_size(0),
+		_offset(0),
+		_ptr(nullptr)
+	{}
+
+#ifdef _WIN32
+	file_mmap(const std::wstring& path, size_t size = 0, size_t offset = 0) :
+		_handle(__MIO_CREATE_FILE_PARAMETER(W)),
+		_mmap_handle(),
+		_size(size),
+		_offset(offset),
+		_ptr(nullptr)
+	{
+		_map();
+	}
+
+	__MIO_DEPRECATED_REASON("ANSI version of Windows API is considered deprecated")
+#endif
+	file_mmap(const std::string& path, size_t size = 0, size_t offset = 0) :
+#ifdef _WIN32
+		_handle(__MIO_CREATE_FILE_PARAMETER(A)),
+		_mmap_handle(),
+#else
+		_handle(__MIO_CREATE_FILE_PARAMETER()),
+#endif
+		_size(size),
+		_offset(offset),
+		_ptr(nullptr)
+	{
+		_map();
+	}
 
 #ifdef MIO_FILESYSTEM_SUPPORT
-	inline file_mmap(const std::filesystem::path& path) : file_mmap(path.native()) {}
+	inline file_mmap(const std::filesystem::path& path, size_t size = 0, size_t offset = 0) :
+		file_mmap(path.native(), size, offset)
+	{}
 #endif
 
-	void close()
+	__MIO_NODISCARD
+	inline size_t file_size()
 	{
-		_handle.close();
+		std::error_code ec;
+		size_t size = file_size(ec);
+		if (ec)
+			throw std::system_error(ec);
+		return size;
 	}
 
 	__MIO_NODISCARD
-	detail::handle_wrapper& handle() & noexcept
+	size_t file_size(std::error_code& ec) noexcept
 	{
-		return _handle;
-	}
-
-#ifdef _WIN32
-	void open(const std::wstring& path)
-	{
-		_handle.emplace(__MIO_CREATE_FILE_PARAMETER(W));
-	}
-
-	__MIO_DEPRECATED_REASON("ANSI version of Windows API is considered deprecated")
-	void open(const std::string& path)
-	{
-		_handle.emplace(__MIO_CREATE_FILE_PARAMETER(A));
-	}
+#if _WIN32
+		DWORD high, low = ::GetFileSize(_handle.unsafe(), &high);
+		if (low == INVALID_FILE_SIZE)
+		{
+			auto e = GetLastError();
+			if (e != ERROR_SUCCESS)
+				ec.assign(e, std::system_category());
+		}
+		return (high << 32) | low;
 #else
-	void open(const std::string& path)
-	{
-		_handle.emplace(__MIO_CREATE_FILE_PARAMETER());
-	}
+		struct stat s;
+		if (::fstat(_handle.raw(), &s))
+			ec.assign(errno, std::system_category());
+		return s.st_size;
 #endif
+	}
+
+	void map(size_t size = 0, size_t offset = 0)
+	{
+		_size = size;
+		_offset = offset;
+		_map();
+	}
+
+	void map(std::error_code& ec, size_t size = 0, size_t offset = 0) noexcept
+	{
+		_size = size;
+		_offset = offset;
+		_map(ec);
+	}
+
+	__MIO_NODISCARD
+	bool mapped() const noexcept
+	{
+		return _ptr;
+	}
 
 #ifdef MIO_FILESYSTEM_SUPPORT
-	inline void open(const std::filesystem::path& path)
+	inline void open(std::error_code& ec, const std::filesystem::path& path) noexcept
 	{
-		open(path.native());
+		_open(ec, path.native());
 	}
 #endif
 
@@ -357,45 +488,25 @@ public:
 		return _handle.valid();
 	}
 
-	size_t resize(size_t size)
-	{
-#ifdef _WIN32
-		LONG high = size >> 32, low = ::SetFilePointer(_handle.unsafe(), size & 0xffffffff, &high, FILE_BEGIN);
-		if (low == INVALID_SET_FILE_POINTER)
-		{
-			auto ec = GetLastError();
-			if (ec != NO_ERROR)
-				throw std::system_error(ec, std::system_category());
-		}
-		if (!::SetEndOfFile(_handle.unsafe()))
-			throw std::system_error(GetLastError(), std::system_category());
-		return (high << 32) | low;
-#else
-		if (::ftruncate(_handle.raw(), size))
-			throw std::system_error(errno, std::system_category());
-		return size;
-#endif
-	}
-
-	__MIO_NODISCARD
-	size_t size()
-	{
-#if _WIN32
-		DWORD high, low = ::GetFileSize(_handle.unsafe(), &high);
-		if (low == INVALID_FILE_SIZE)
-		{
-			auto ec = GetLastError();
-			if (ec != NO_ERROR)
-				throw std::system_error(ec, std::system_category());
-		}
-		return (high << 32) | low;
-#else
-		struct stat s;
-		if (::fstat(_handle.raw(), &s))
-			throw std::system_error(errno, std::system_category());
-		return s.st_size;
-#endif
-	}
+// 	size_t resize(size_t size)
+// 	{
+// #ifdef _WIN32
+// 		LONG high = size >> 32, low = ::SetFilePointer(_handle.unsafe(), size & 0xffffffff, &high, FILE_BEGIN);
+// 		if (low == INVALID_SET_FILE_POINTER)
+// 		{
+// 			auto ec = GetLastError();
+// 			if (ec != ERROR_SUCCESS)
+// 				throw std::system_error(ec, std::system_category());
+// 		}
+// 		if (!::SetEndOfFile(_handle.unsafe()))
+// 			throw std::system_error(GetLastError(), std::system_category());
+// 		return (high << 32) | low;
+// #else
+// 		if (::ftruncate(_handle.raw(), size))
+// 			throw std::system_error(errno, std::system_category());
+// 		return size;
+// #endif
+// 	}
 };
 
 #undef __MIO_CREATE_FILE_PARAMETER
