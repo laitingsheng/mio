@@ -351,6 +351,13 @@ class file_mmap final
 			total_size
 		);
 		if (!_ptr)
+		{
+			detail::_last_error(ec);
+			std::error_code hec;
+			_mmap_handle.close(hec);
+			if (hec)
+				ec = std::make_error_code(std::errc::state_not_recoverable);
+		}
 #else
 		_ptr = ::mmap(
 			nullptr,
@@ -361,8 +368,8 @@ class file_mmap final
 			page_offset
 		);
 		if (_ptr == MAP_FAILED)
-#endif
 			detail::_last_error(ec);
+#endif
 	}
 
 #ifdef _WIN32
@@ -475,8 +482,14 @@ public:
 		return _ptr;
 	}
 
+	template<typename P>
+	void open(std::error_code& ec, P&& path)
+	{
+		_open(ec, std::forward<P>(path));
+	}
+
 #ifdef MIO_FILESYSTEM_SUPPORT
-	inline void open(std::error_code& ec, const std::filesystem::path& path) noexcept
+	void open(std::error_code& ec, const std::filesystem::path& path) noexcept
 	{
 		_open(ec, path.native());
 	}
@@ -488,25 +501,25 @@ public:
 		return _handle.valid();
 	}
 
-// 	size_t resize(size_t size)
-// 	{
-// #ifdef _WIN32
-// 		LONG high = size >> 32, low = ::SetFilePointer(_handle.unsafe(), size & 0xffffffff, &high, FILE_BEGIN);
-// 		if (low == INVALID_SET_FILE_POINTER)
-// 		{
-// 			auto ec = GetLastError();
-// 			if (ec != ERROR_SUCCESS)
-// 				throw std::system_error(ec, std::system_category());
-// 		}
-// 		if (!::SetEndOfFile(_handle.unsafe()))
-// 			throw std::system_error(GetLastError(), std::system_category());
-// 		return (high << 32) | low;
-// #else
-// 		if (::ftruncate(_handle.raw(), size))
-// 			throw std::system_error(errno, std::system_category());
-// 		return size;
-// #endif
-// 	}
+	size_t resize(size_t size)
+	{
+#ifdef _WIN32
+		LONG high = size >> 32, low = ::SetFilePointer(_handle.unsafe(), size & 0xffffffff, &high, FILE_BEGIN);
+		if (low == INVALID_SET_FILE_POINTER)
+		{
+			auto ec = GetLastError();
+			if (ec != ERROR_SUCCESS)
+				throw std::system_error(ec, std::system_category());
+		}
+		if (!::SetEndOfFile(_handle.unsafe()))
+			throw std::system_error(GetLastError(), std::system_category());
+		return (high << 32) | low;
+#else
+		if (::ftruncate(_handle.raw(), size))
+			throw std::system_error(errno, std::system_category());
+		return size;
+#endif
+	}
 };
 
 #undef __MIO_CREATE_FILE_PARAMETER
